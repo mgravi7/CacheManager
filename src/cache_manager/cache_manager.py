@@ -8,7 +8,7 @@ class CacheManager:
     """
     Singleton cache manager for Redis connection and cache instances.
     
-    Default TTL is 600 seconds (10 minutes) for all cache instances.
+    Each cache class defines its own default TTL based on domain requirements.
     """
     
     _instance: Optional['CacheManager'] = None
@@ -29,8 +29,8 @@ class CacheManager:
         """
         Initialize Redis connection and cache instances.
         
-        Creates cache instances with 10-minute TTL (recommended for user profiles).
-        Adjust TTL based on your data volatility requirements.
+        Each cache instance uses its own default TTL based on domain requirements.
+        Cache classes can be overridden at instantiation if needed.
         """
         if self.redis is not None:
             return
@@ -41,9 +41,9 @@ class CacheManager:
             decode_responses=False,
         )
         
-        # Default TTL: 600 seconds (10 minutes)
-        self.uuid_to_id_cache = UserUUIDtoIdCache(self.redis, ttl=600)
-        self.id_to_uuid_cache = UserIdToUUIDCache(self.redis, ttl=600)
+        # Cache instances use their own domain-specific defaults
+        self.uuid_to_id_cache = UserUUIDtoIdCache(self.redis)
+        self.id_to_uuid_cache = UserIdToUUIDCache(self.redis)
 
     async def disconnect(self) -> None:
         """Gracefully close Redis connection."""
