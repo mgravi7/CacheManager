@@ -5,6 +5,12 @@ from .user_id_to_uuid_cache import UserIdToUUIDCache
 
 
 class CacheManager:
+    """
+    Singleton cache manager for Redis connection and cache instances.
+    
+    Default TTL is 600 seconds (10 minutes) for all cache instances.
+    """
+    
     _instance: Optional['CacheManager'] = None
 
     def __new__(cls) -> 'CacheManager':
@@ -20,7 +26,12 @@ class CacheManager:
             self._initialized = True
 
     async def connect(self, redis_url: str = "redis://localhost:6379") -> None:
-        """Initialize Redis connection and cache instances."""
+        """
+        Initialize Redis connection and cache instances.
+        
+        Creates cache instances with 10-minute TTL (recommended for user profiles).
+        Adjust TTL based on your data volatility requirements.
+        """
         if self.redis is not None:
             return
         
@@ -30,8 +41,9 @@ class CacheManager:
             decode_responses=False,
         )
         
-        self.uuid_to_id_cache = UserUUIDtoIdCache(self.redis, ttl=3600)
-        self.id_to_uuid_cache = UserIdToUUIDCache(self.redis, ttl=3600)
+        # Default TTL: 600 seconds (10 minutes)
+        self.uuid_to_id_cache = UserUUIDtoIdCache(self.redis, ttl=600)
+        self.id_to_uuid_cache = UserIdToUUIDCache(self.redis, ttl=600)
 
     async def disconnect(self) -> None:
         """Gracefully close Redis connection."""
