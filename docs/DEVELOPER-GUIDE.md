@@ -21,6 +21,7 @@ A focused guide for developers implementing and extending the CacheManager syste
 2. **Type Safety** - Full type hints prevent runtime errors
 3. **Async First** - All I/O operations use async/await
 4. **Fail Gracefully** - Log errors, don't crash
+5. **Factory Pattern** - CacheManager is the single source for cache instances
 
 ### Key Components
 
@@ -35,7 +36,9 @@ A focused guide for developers implementing and extending the CacheManager syste
 
 ## Implementation Patterns
 
-### 1. Creating a Cache Instance
+### 1. Creating a Cache Instance (Factory Pattern)
+
+**CacheManager acts as a factory** - always use it to get cache instances.
 
 ```python
 from cache_manager import CacheManager
@@ -46,8 +49,14 @@ cache_manager = CacheManager()
 # Connect to Redis (in FastAPI lifespan or startup)
 await cache_manager.connect(redis_url="redis://:password@redis:6379/0")
 
-# Use the cache
+# Use the cache through the factory
 user_id = await cache_manager.uuid_to_id_cache.get(user_uuid)
+
+# CacheManager provides:
+# - cache_manager.uuid_to_id_cache
+# - cache_manager.id_to_uuid_cache
+# - cache_manager.session_cache (if added)
+# - ... all registered caches
 ```
 
 ### 2. FastAPI Integration Pattern
@@ -104,7 +113,7 @@ async def get_user_by_uuid(user_uuid: UUID) -> Optional[User]:
 async def get(self, key: K) -> Optional[V]:
     try:
         value = await self.redis.get(redis_key)
-        return self._deserialize(value) if value else None
+        return self._deserialize(value) if value : None
     except redis.ConnectionError as e:
         logger.error(f"Redis connection failed: {e}")
         return None  # App continues without cache
@@ -169,10 +178,12 @@ from cache_manager import AsyncCacheBase
 class SessionTokenCache(AsyncCacheBase[str, UUID]):
     """Maps session token to user UUID."""
     
+    NAMESPACE = "session:token"
+    
     def __init__(self, redis_client: Redis, ttl: int = 300):  # 5 min for sessions
         super().__init__(
             redis_client,
-            namespace="session:token",
+            namespace=self.NAMESPACE,
             ttl=ttl,
             serializer=lambda v: str(v),
             deserializer=lambda b: UUID(b.decode("utf-8")),
@@ -182,7 +193,14 @@ class SessionTokenCache(AsyncCacheBase[str, UUID]):
         return f"{self.namespace}:{key}"
 ```
 
-### Step 2: Add to CacheManager (Optional)
+### Step 2: Add to CacheManager (Required)
+
+**Important**: CacheManager follows the Factory Pattern. All cache instances **must** be 
+registered in CacheManager to ensure:
+- Consistent access pattern across the team
+- Centralized lifecycle management
+- Easy discoverability of available caches
+- Simplified testing and mocking
 
 ```python
 # In cache_manager.py
@@ -194,22 +212,38 @@ class CacheManager:
             self.redis: Optional[Redis] = None
             self.uuid_to_id_cache: Optional[UserUUIDtoIdCache] = None
             self.id_to_uuid_cache: Optional[UserIdToUUIDCache] = None
-            self.session_cache: Optional[SessionTokenCache] = None  # Add this
+            self.session_cache: Optional[SessionTokenCache] = None  # Add your cache
             self._initialized = True
     
     async def connect(self, redis_url: str = "redis://localhost:6379"):
-        # ... existing code ...
-        self.session_cache = SessionTokenCache(self.redis, ttl=300)
+        self.redis = from_url(redis_url, ...)
+        
+        # Register cache instances
+        self.uuid_to_id_cache = UserUUIDtoIdCache(self.redis)
+        self.id_to_uuid_cache = UserIdToUUIDCache(self.redis)
+        self.session_cache = SessionTokenCache(self.redis)  # Initialize your cache
 ```
 
-### Step 3: Use Your Cache
+### Step 3: Use Your Cache Through CacheManager
+
+**Always access caches through CacheManager** - never instantiate cache classes directly.
 
 ```python
+# Correct - Factory Pattern
 cache_manager = CacheManager()
 await cache_manager.connect(redis_url)
-
 user_uuid = await cache_manager.session_cache.get("token_abc123")
+
+# Wrong - Direct instantiation breaks the pattern
+# redis = from_url(...)
+# cache = SessionTokenCache(redis)  # DON'T DO THIS
 ```
+
+**Benefits of Factory Pattern:**
+- Single Redis connection pool shared across all caches
+- Consistent initialization and cleanup
+- Easy to find all available cache types
+- Testable with a single mock point
 
 ---
 
@@ -283,10 +317,13 @@ class UserProfile:
     preferences: dict
 
 class UserProfileCache(AsyncCacheBase[int, UserProfile]):
+    
+    NAMESPACE = "user:profile"
+    
     def __init__(self, redis_client: Redis, ttl: int = 600):
         super().__init__(
             redis_client,
-            namespace="user:profile",
+            namespace=self.NAMESPACE,
             ttl=ttl,
             serializer=lambda v: json.dumps(asdict(v)),
             deserializer=lambda b: UserProfile(**json.loads(b.decode())),
@@ -385,6 +422,39 @@ async def cache_health():
         return {"status": "error", "healthy": False, "error": str(e)}
 ```
 
+### Scenario 6: Anti-Pattern - Direct Instantiation (Don't Do This!)
+
+```python
+# ❌ WRONG - Direct instantiation breaks Factory Pattern
+from redis.asyncio import from_url
+from cache_manager import UserUUIDtoIdCache
+
+redis = from_url("redis://localhost:6379")
+cache = UserUUIDtoIdCache(redis)  # BAD!
+user_id = await cache.get(user_uuid)
+
+# Problems with this approach:
+# 1. Multiple Redis connections (resource waste)
+# 2. Inconsistent access pattern across team
+# 3. Hard to discover what caches exist
+# 4. Difficult to test and mock
+# 5. No centralized lifecycle management
+
+# ✅ CORRECT - Use CacheManager factory
+from cache_manager import CacheManager
+
+cache_manager = CacheManager()
+await cache_manager.connect("redis://localhost:6379")
+user_id = await cache_manager.uuid_to_id_cache.get(user_uuid)
+
+# Benefits:
+# 1. Single Redis connection pool
+# 2. Consistent pattern everyone follows
+# 3. Easy to see all available caches
+# 4. Simple to test (mock CacheManager)
+# 5. Proper lifecycle management
+```
+
 ---
 
 ## Best Practices
@@ -397,6 +467,9 @@ async def cache_health():
 - Write both unit and integration tests
 - Document TTL choices in code comments
 - Handle `CacheValidationError` for batch operations >100
+- **Always register new cache classes in CacheManager** (Factory Pattern)
+- **Always access caches through CacheManager singleton**
+- Declare NAMESPACE as a class-level constant
 
 ### ❌ Don't
 
@@ -405,6 +478,8 @@ async def cache_health():
 - Don't exceed 100 entries in `mget`/`mset` without batching
 - Don't use blocking Redis calls (always use async)
 - Don't hardcode Redis passwords (use environment variables)
+- **Don't instantiate cache classes directly** - use CacheManager factory
+- **Don't skip registering new caches in CacheManager** - breaks team consistency
 
 ---
 

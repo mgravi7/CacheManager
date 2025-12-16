@@ -15,6 +15,8 @@ class UserIdToUUIDCache(AsyncCacheBase[int, UUID]):
     The TTL is not enforced but should be chosen based on your use case and
     how frequently user data changes in your system.
     """
+    
+    NAMESPACE = "user:id-to-uuid"
 
     def __init__(self, redis_client: Redis, ttl: int = 600):
         """
@@ -26,7 +28,7 @@ class UserIdToUUIDCache(AsyncCacheBase[int, UUID]):
         """
         super().__init__(
             redis_client,
-            namespace="user:id-to-uuid",
+            namespace=self.NAMESPACE,
             ttl=ttl,
             serializer=lambda v: str(v),
             deserializer=lambda b: UUID(b.decode("utf-8")),

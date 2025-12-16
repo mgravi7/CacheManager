@@ -16,6 +16,8 @@ class UserUUIDtoIdCache(AsyncCacheBase[UUID, int]):
     how frequently user data changes in your system.
     """
     
+    NAMESPACE = "user:uuid-to-id"
+
     def __init__(self, redis_client: Redis, ttl: int = 600):
         """
         Initialize UUID to ID cache.
@@ -26,7 +28,7 @@ class UserUUIDtoIdCache(AsyncCacheBase[UUID, int]):
         """
         super().__init__(
             redis_client,
-            namespace="user:uuid-to-id",
+            namespace=self.NAMESPACE,
             ttl=ttl,
             serializer=lambda v: str(v),
             deserializer=lambda b: int(b.decode("utf-8")),
