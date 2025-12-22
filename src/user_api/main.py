@@ -1,8 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from contextlib import asynccontextmanager
 from cache_manager import CacheManager
 from .api import router as user_router
 import os
+import asyncio
 
 
 @asynccontextmanager
@@ -49,11 +50,40 @@ async def root():
 
 @app.get("/health", summary="Health check")
 async def health_check():
-    """Health check endpoint."""
-    cache_manager = CacheManager()
-    redis_connected = cache_manager.redis is not None
+    """
+    Health check endpoint for Kubernetes liveness/readiness probes.
     
-    return {
-        "status": "healthy" if redis_connected else "degraded",
-        "redis_connected": redis_connected
-    }
+    Returns:
+        200: Service is healthy and Redis is connected
+        503: Service is unhealthy (Redis connection issues)
+    
+    Kubernetes will restart the pod if this endpoint fails repeatedly.
+    """
+    cache_manager = CacheManager()
+    
+    if cache_manager.redis is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cache not initialized"
+        )
+    
+    try:
+        # Test Redis connection with timeout
+        await asyncio.wait_for(cache_manager.redis.ping(), timeout=2.0)
+        
+        return {
+            "status": "healthy",
+            "redis": "connected",
+            "cache_manager": "operational"
+        }
+    
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis health check timeout"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Redis unhealthy: {str(e)}"
+        )

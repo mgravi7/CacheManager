@@ -7,6 +7,7 @@ A focused guide for developers implementing and extending the CacheManager syste
 - [Core Concepts](#core-concepts)
 - [Implementation Patterns](#implementation-patterns)
 - [Error Handling Strategy](#error-handling-strategy)
+- [Redis Resilience](#redis-resilience)
 - [Creating Custom Cache Classes](#creating-custom-cache-classes)
 - [Testing Guide](#testing-guide)
 - [Common Scenarios](#common-scenarios)
@@ -163,6 +164,124 @@ except CacheValidationError as e:
         batch_results = await cache.mget(batch)
         results.update(batch_results)
 ```
+
+---
+
+## Redis Resilience
+
+### Self-Healing Connection Management
+
+CacheManager includes automatic reconnection for Redis pod failures in Kubernetes environments.
+
+**How It Works:**
+
+1. **Background Health Checks** - Every 10 seconds, pings Redis
+2. **Failure Detection** - Tracks consecutive failures
+3. **Automatic Reconnection** - After 3 failures (~30s), attempts reconnect
+4. **Zero Configuration** - Works automatically once connected
+
+**Timeline Example:**
+
+```
+0s:  Redis pod healthy ✅
+10s: Redis pod crashes
+20s: Health check #1 fails → logged
+30s: Health check #2 fails → logged
+40s: Health check #3 fails → RECONNECT triggered
+45s: New Redis pod ready
+46s: Reconnection successful ✅
+```
+
+**During Reconnection:**
+- Cache operations return `None` (graceful degradation)
+- Application continues serving requests
+- No manual intervention required
+
+### Connection Pool Configuration
+
+```python
+# Configured automatically in CacheManager
+max_connections=50           # Pool size limit
+socket_timeout=5.0           # Read/write timeout
+socket_connect_timeout=2.0   # Connection timeout
+retry_on_timeout=True        # Retry transient failures
+health_check_interval=30     # Built-in pool validation
+```
+
+**What These Mean:**
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `max_connections` | 50 | Prevents connection exhaustion |
+| `socket_timeout` | 5.0s | Fails fast on stale connections |
+| `socket_connect_timeout` | 2.0s | Quick failure detection |
+| `retry_on_timeout` | True | Handles transient network issues |
+| `health_check_interval` | 30s | Redis client validates pool |
+
+### Kubernetes Integration
+
+**Health Check Endpoint:**
+```python
+@app.get("/health")
+async def health_check():
+    # Returns 503 if Redis unhealthy
+    # K8s will restart pod after repeated failures
+```
+
+**Deployment Configuration:**
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3      # 30s before restart
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 3
+```
+
+**Multi-Layer Resilience:**
+
+1. **Application Layer** (CacheManager)
+   - Detects failures in 30s
+   - Auto-reconnects to new pod
+   - Graceful degradation during downtime
+
+2. **Infrastructure Layer** (Kubernetes)
+   - Safety net if app can't recover
+   - Restarts pod after 30s of 503 responses
+   - Fresh start with new connection
+
+**Total Downtime:**
+- **Best case**: 30-40s (automatic reconnection)
+- **Worst case**: 60s (K8s pod restart)
+- **App behavior**: Continues serving requests (without cache)
+
+### Monitoring Reconnection Events
+
+**Log Messages to Watch:**
+
+```
+INFO:  Redis connection established successfully
+WARNING: Redis health check failed (1/3): Connection refused
+WARNING: Redis health check failed (2/3): Connection refused
+ERROR: Redis health check failed 3 times, attempting reconnection...
+INFO:  Starting Redis reconnection...
+INFO:  Redis reconnection successful
+```
+
+**Metrics to Track:**
+
+- `cache_reconnection_attempts` - Count of reconnection attempts
+- `cache_downtime_seconds` - Total time without cache
+- `cache_hit_rate` - Drops during outages, recovers after reconnect
 
 ---
 
